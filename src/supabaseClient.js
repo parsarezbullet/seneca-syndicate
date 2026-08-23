@@ -46,20 +46,38 @@ export const bookings = {
    Omitting them from lToRow (rather than sending null) is what preserves them
    when an older flight is edited. */
 const num = (v) => (v === "" || v == null ? null : Number(v));
+/* A flight has 1-3 participants. Rows written before the participants column
+   existed carry null, and read back as a solo flight by member_id. */
+const pFromRow = (r) =>
+  Array.isArray(r.participants) && r.participants.length
+    ? r.participants.map((p) => ({ memberId: p.member_id, fuelAdded: p.fuel_added, fuelCost: p.fuel_cost }))
+    : [{ memberId: r.member_id, fuelAdded: r.fuel_added, fuelCost: r.fuel_cost }];
+
 const lFromRow = (r) => ({
-  id: r.id, bookingId: r.booking_id, userId: r.member_id, date: r.flight_date,
+  id: r.id, bookingId: r.booking_id, userId: r.member_id, participants: pFromRow(r),
+  date: r.flight_date,
   hobbsStart: r.hobbs_start, hobbsEnd: r.hobbs_end,
   fuelStart: r.fuel_start, fuelEnd: r.fuel_end, fuelAdded: r.fuel_added, fuelCost: r.fuel_cost,
   hobbsTime: r.hobbs_time, fuelBurned: r.fuel_burned,
   notes: r.notes || "",
 });
-const lToRow = (l) => ({
-  booking_id: l.bookingId || null, member_id: l.userId, flight_date: l.date,
-  hobbs_start: num(l.hobbsStart), hobbs_end: num(l.hobbsEnd),
-  fuel_start: num(l.fuelStart), fuel_end: num(l.fuelEnd),
-  fuel_added: num(l.fuelAdded), fuel_cost: num(l.fuelCost),
-  notes: l.notes ? l.notes : null,
-});
+/* fuel_added / fuel_cost stay whole-flight totals — the generated fuel_burned
+   column depends on fuel_added — so they are summed from the participants
+   rather than entered separately. */
+const lToRow = (l) => {
+  const ps = (l.participants || []).filter((p) => p.memberId);
+  const total = (key) => (ps.length ? ps.reduce((a, p) => a + (Number(p[key]) || 0), 0) : null);
+  return {
+    booking_id: l.bookingId || null, member_id: l.userId, flight_date: l.date,
+    participants: ps.length
+      ? ps.map((p) => ({ member_id: p.memberId, fuel_added: num(p.fuelAdded), fuel_cost: num(p.fuelCost) }))
+      : null,
+    hobbs_start: num(l.hobbsStart), hobbs_end: num(l.hobbsEnd),
+    fuel_start: num(l.fuelStart), fuel_end: num(l.fuelEnd),
+    fuel_added: total("fuelAdded"), fuel_cost: total("fuelCost"),
+    notes: l.notes ? l.notes : null,
+  };
+};
 
 export const flightLogs = {
   async list() {

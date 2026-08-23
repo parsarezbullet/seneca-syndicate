@@ -48,6 +48,25 @@ const sum = (arr) => arr.reduce((a, b) => a + (Number(b) || 0), 0);
 const galDue = (hobbsTime) => (hobbsTime == null || hobbsTime === "" ? null : Number(hobbsTime) * FUEL_PER_HOBBS_HOUR);
 const balLabel = (b) => (Math.abs(b) < 0.05 ? "even" : b < 0 ? `${Math.abs(b).toFixed(1)} gal short` : `${b.toFixed(1)} gal over`);
 const balColor = (b) => (b < -0.05 ? "#b3261e" : BRAND.teal);
+/* A flight carries 1-3 participants. Duty splits evenly between them; the fuel
+   credit does not — each is credited only the gallons they personally added,
+   so an uneven fill lands on the right person. flownBy/shareOf are the only
+   places that know this, which keeps everything downstream a plain sum. */
+const partsOf = (l) => (l.participants?.length ? l.participants : [{ memberId: l.userId, fuelAdded: l.fuelAdded, fuelCost: l.fuelCost }]);
+const flownBy = (l, memberId) => partsOf(l).some((p) => p.memberId === memberId);
+const shareOf = (l, memberId) => {
+  const ps = partsOf(l);
+  const me = ps.find((p) => p.memberId === memberId);
+  if (!me) return null;
+  const n = ps.length;
+  return {
+    hours: (Number(l.hobbsTime) || 0) / n,
+    due: (Number(galDue(l.hobbsTime)) || 0) / n,
+    added: Number(me.fuelAdded) || 0,
+    cost: Number(me.fuelCost) || 0,
+    of: n,
+  };
+};
 
 /* =============================== app ====================================== */
 export default function App() {
@@ -393,16 +412,17 @@ function Logbook({ logs, user, readOnly, onEdit, latestEnds }) {
         </div>
         <div style={{ fontSize: 12.5, opacity: 0.75, marginTop: 4 }}>
           Every member puts back {FUEL_PER_HOBBS_HOUR} gallons for each Hobbs hour they fly.
+          On a shared flight the duty splits evenly; fuel is credited to whoever pumped it.
         </div>
       </div>
 
       {/* per-member usage */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 16 }}>
         {MEMBERS.map((m) => {
-          const mine = logs.filter((l) => l.userId === m.id);
-          const hrs = sum(mine.map((l) => l.hobbsTime));
-          const fuel$ = sum(mine.map((l) => l.fuelCost));
-          const bal = sum(mine.map((l) => l.fuelAdded)) - sum(mine.map((l) => galDue(l.hobbsTime)));
+          const mine = logs.filter((l) => flownBy(l, m.id)).map((l) => shareOf(l, m.id));
+          const hrs = sum(mine.map((v) => v.hours));
+          const fuel$ = sum(mine.map((v) => v.cost));
+          const bal = sum(mine.map((v) => v.added)) - sum(mine.map((v) => v.due));
           return (
             <div key={m.id} style={{ background: "#fff", border: `1px solid #e6ded0`, borderTop: `4px solid ${m.color}`, borderRadius: 12, padding: "10px 11px" }}>
               <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 6 }}>{m.name}</div>
@@ -424,7 +444,7 @@ function Logbook({ logs, user, readOnly, onEdit, latestEnds }) {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {logs.map((l) => { const mine = !readOnly && l.userId === user.id; return <LogCard key={l.id} l={l} mine={mine} onClick={mine ? () => onEdit(l) : undefined} />; })}
+          {logs.map((l) => { const mine = !readOnly && flownBy(l, user.id); return <LogCard key={l.id} l={l} mine={mine} onClick={mine ? () => onEdit(l) : undefined} />; })}
         </div>
       )}
     </div>
@@ -435,13 +455,15 @@ function Stat({ label, value }) {
 }
 function LogCard({ l, mine, onClick }) {
   const m = memberById(l.userId);
+  const ps = partsOf(l);
+  const shared = ps.length > 1;
   const due = galDue(l.hobbsTime);
   const bal = due == null ? null : (Number(l.fuelAdded) || 0) - due;
   return (
     <button onClick={onClick} className="ss-strip" style={{ textAlign: "left", width: "100%", display: "block", cursor: mine ? "pointer" : "default", border: "1px solid #e6ded0", borderLeft: `6px solid ${m.color}`, borderRadius: 14, padding: "13px 15px", background: "#fff", color: BRAND.ink }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <span style={{ fontWeight: 700, fontSize: 15 }}>{fmtCardDate(l.date)}</span>
-        <span className="ss-mono" style={{ fontSize: 11.5, opacity: 0.7 }}>{m.name}</span>
+        <span className="ss-mono" style={{ fontSize: 11.5, opacity: 0.7 }}>{ps.map((p) => memberById(p.memberId).name).join(" + ")}</span>
       </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 8 }}>
         <Mini label="Hobbs" value={l.hobbsTime != null ? `${n1(l.hobbsTime)} hr` : "—"} />
@@ -452,6 +474,24 @@ function LogCard({ l, mine, onClick }) {
       {due != null && (
         <div className="ss-mono" style={{ fontSize: 11.5, fontWeight: 700, marginTop: 8, color: balColor(bal) }}>
           {n1(due)} gal due · {n1(l.fuelAdded ?? 0)} added · {balLabel(bal)}
+        </div>
+      )}
+      {shared && due != null && (
+        <div style={{ marginTop: 7, paddingTop: 6, borderTop: "1px dashed #e6ded0" }}>
+          <div className="ss-mono" style={{ fontSize: 9.5, opacity: 0.5, letterSpacing: 0.5, marginBottom: 3 }}>
+            SPLIT {ps.length} WAYS · {n1(due / ps.length)} GAL DUE EACH
+          </div>
+          {ps.map((p) => {
+            const v = shareOf(l, p.memberId);
+            const d = v.added - v.due;
+            return (
+              <div key={p.memberId} className="ss-mono" style={{ fontSize: 11, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ minWidth: 52, fontWeight: 700, color: memberById(p.memberId).color }}>{memberById(p.memberId).name}</span>
+                <span style={{ opacity: 0.7 }}>{n1(v.added)} added</span>
+                <span style={{ fontWeight: 700, color: balColor(d) }}>{balLabel(d)}</span>
+              </div>
+            );
+          })}
         </div>
       )}
       <div className="ss-mono" style={{ fontSize: 10.5, opacity: 0.55, marginTop: 8 }}>
@@ -536,23 +576,39 @@ function FlightLogSheet({ user, initial, presetDate, latestEnds, onSave, onDelet
   const [hobbsEnd, setHobbsEnd] = useState(initial?.hobbsEnd ?? "");
   const [fuelStart, setFuelStart] = useState(initial?.fuelStart ?? latestEnds.fuel ?? "");
   const [fuelEnd, setFuelEnd] = useState(initial?.fuelEnd ?? "");
-  const [fuelAdded, setFuelAdded] = useState(initial?.fuelAdded ?? "");
-  const [fuelCost, setFuelCost] = useState(initial?.fuelCost ?? "");
+  /* Who was aboard, and what each of them put in. The member logging the
+     flight is always the first entry and cannot be removed. */
+  const [crew, setCrew] = useState(() => {
+    const from = initial ? partsOf(initial) : [{ memberId: user.id, fuelAdded: "", fuelCost: "" }];
+    const mine = from.filter((p) => p.memberId === user.id);
+    const rest = from.filter((p) => p.memberId !== user.id);
+    const seed = mine.length ? [...mine, ...rest] : [{ memberId: user.id, fuelAdded: "", fuelCost: "" }, ...rest];
+    return seed.map((p) => ({ memberId: p.memberId, fuelAdded: p.fuelAdded ?? "", fuelCost: p.fuelCost ?? "" }));
+  });
   const [notes, setNotes] = useState(initial?.notes || "");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const aboard = (id) => crew.some((p) => p.memberId === id);
+  const toggle = (id) => {
+    if (id === user.id) return;
+    setErr("");
+    setCrew((c) => (c.some((p) => p.memberId === id) ? c.filter((p) => p.memberId !== id) : [...c, { memberId: id, fuelAdded: "", fuelCost: "" }]));
+  };
+  const setCrewField = (id, key, v) => setCrew((c) => c.map((p) => (p.memberId === id ? { ...p, [key]: v } : p)));
+
   const ck = (a, b) => a !== "" && a != null && b !== "" && b != null && Number(b) < Number(a);
   const numOr = (v) => (v === "" || v == null ? null : Number(v));
   const hrsNow = (() => { const a = numOr(hobbsStart), b = numOr(hobbsEnd); return a != null && b != null && b >= a ? b - a : null; })();
-  const dueNow = hrsNow == null ? null : hrsNow * FUEL_PER_HOBBS_HOUR;
-  const addedNow = numOr(fuelAdded) ?? 0;
-  const balNow = dueNow == null ? null : addedNow - dueNow;
+  const totalDue = hrsNow == null ? null : hrsNow * FUEL_PER_HOBBS_HOUR;
+  const eachDue = totalDue == null ? null : totalDue / crew.length;
+  const totalAdded = crew.reduce((a, p) => a + (Number(p.fuelAdded) || 0), 0);
+
   const submit = async () => {
     if (!date) { setErr("Pick the flight date."); return; }
     if (ck(hobbsStart, hobbsEnd)) { setErr("Hobbs end can't be less than Hobbs start."); return; }
     const draft = { id: initial?.id, userId: user.id, bookingId: initial?.bookingId, date,
-      hobbsStart, hobbsEnd, fuelStart, fuelEnd, fuelAdded, fuelCost, notes: notes.trim() };
+      hobbsStart, hobbsEnd, fuelStart, fuelEnd, participants: crew, notes: notes.trim() };
     setBusy(true); await onSave(draft); setBusy(false);
   };
   return (
@@ -560,23 +616,76 @@ function FlightLogSheet({ user, initial, presetDate, latestEnds, onSave, onDelet
       <div className="ss-sheet" onClick={(e) => e.stopPropagation()}>
         <SheetHead title={editing ? "Edit flight log" : "Log a flight"} sub={`${TAIL} · ${user.name}`} onClose={onClose} />
         <Field label="Flight date"><input type="date" className="ss-in" value={date} onChange={(e) => { setDate(e.target.value); setErr(""); }} /></Field>
+
+        <div style={{ marginBottom: 14 }}>
+          <label className="ss-display" style={labelStyle}>Who flew</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            {MEMBERS.map((m) => {
+              const on = aboard(m.id), self = m.id === user.id;
+              return (
+                <button key={m.id} className="ss-btn" aria-pressed={on} onClick={() => toggle(m.id)} disabled={self}
+                  style={{ flex: 1, minHeight: 46, cursor: self ? "default" : "pointer", borderRadius: 12, fontSize: 14,
+                    border: on ? `2px solid ${BRAND.ink}` : "1px solid #d9cfbd",
+                    background: on ? m.color : "transparent", color: on ? m.fg : BRAND.ink,
+                    fontWeight: on ? 700 : 600, opacity: self ? 0.85 : 1 }}>
+                  {m.name}{self ? " (you)" : ""}
+                </button>
+              );
+            })}
+          </div>
+          <p className="ss-mono" style={{ fontSize: 10.5, opacity: 0.55, margin: "7px 0 0" }}>
+            {crew.length === 1
+              ? "Tap a partner to share this flight."
+              : `Duty splits ${crew.length} ways. Fuel is credited to whoever pumped it.`}
+          </p>
+        </div>
+
         <Pair label="Hobbs" a={hobbsStart} setA={setHobbsStart} b={hobbsEnd} setB={setHobbsEnd} clr={() => setErr("")} />
         <Pair label="Fuel on board (gal)" a={fuelStart} setA={setFuelStart} b={fuelEnd} setB={setFuelEnd} clr={() => setErr("")} />
-        <div style={{ display: "flex", gap: 12 }}>
-          <Field label="Fuel added (gal)"><input type="number" inputMode="decimal" step="0.1" className="ss-in" value={fuelAdded} onChange={(e) => setFuelAdded(e.target.value)} placeholder="—" /></Field>
-          <Field label="Fuel cost ($)"><input type="number" inputMode="decimal" step="0.01" className="ss-in" value={fuelCost} onChange={(e) => setFuelCost(e.target.value)} placeholder="—" /></Field>
-        </div>
-        <div style={{ borderRadius: 12, border: `1px solid ${BRAND.mint}`, background: "#F2FAF6", padding: "11px 13px", marginBottom: 14 }}>
+
+        <label className="ss-display" style={labelStyle}>Fuel added{crew.length > 1 ? " — per person" : ""}</label>
+        {crew.map((p) => {
+          const m = memberById(p.memberId);
+          return (
+            <div key={p.memberId} style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+              {crew.length > 1 && (
+                <span className="ss-mono" style={{ width: 54, flexShrink: 0, fontSize: 12, fontWeight: 700, color: m.color }}>{m.name}</span>
+              )}
+              <input type="number" inputMode="decimal" step="0.1" className="ss-in" placeholder="gal"
+                value={p.fuelAdded} onChange={(e) => setCrewField(p.memberId, "fuelAdded", e.target.value)} />
+              <input type="number" inputMode="decimal" step="0.01" className="ss-in" placeholder="$"
+                value={p.fuelCost} onChange={(e) => setCrewField(p.memberId, "fuelCost", e.target.value)} />
+            </div>
+          );
+        })}
+
+        <div style={{ borderRadius: 12, border: `1px solid ${BRAND.mint}`, background: "#F2FAF6", padding: "11px 13px", margin: "4px 0 14px" }}>
           <div className="ss-mono" style={{ fontSize: 10.5, letterSpacing: 1, opacity: 0.7 }}>FUEL DUTY · {FUEL_PER_HOBBS_HOUR} GAL PER HOBBS HOUR</div>
-          {dueNow == null ? (
+          {totalDue == null ? (
             <div style={{ fontSize: 13, marginTop: 5, opacity: 0.75 }}>Enter Hobbs start and end to see what you owe.</div>
           ) : (
             <>
-              <div style={{ fontSize: 13.5, marginTop: 5 }}>{n1(hrsNow)} hr × {FUEL_PER_HOBBS_HOUR} = <strong>{n1(dueNow)} gal</strong> required</div>
-              <div style={{ fontSize: 13.5, marginTop: 3, fontWeight: 700, color: balColor(balNow) }}>{n1(addedNow)} gal added → {balLabel(balNow)}</div>
+              <div style={{ fontSize: 13.5, marginTop: 5 }}>
+                {n1(hrsNow)} hr × {FUEL_PER_HOBBS_HOUR} = {n1(totalDue)} gal
+                {crew.length > 1 ? <> · split {crew.length} ways → <strong>{n1(eachDue)} gal each</strong></> : <> <strong>required</strong></>}
+              </div>
+              {crew.map((p) => {
+                const d = (Number(p.fuelAdded) || 0) - eachDue;
+                return (
+                  <div key={p.memberId} style={{ fontSize: 13.5, marginTop: 3, fontWeight: 700, color: balColor(d) }}>
+                    {crew.length > 1 ? `${memberById(p.memberId).name}: ` : ""}{n1(Number(p.fuelAdded) || 0)} gal added → {balLabel(d)}
+                  </div>
+                );
+              })}
+              {crew.length > 1 && (
+                <div className="ss-mono" style={{ fontSize: 10.5, opacity: 0.6, marginTop: 5 }}>
+                  {n1(totalAdded)} gal on board this flight in total.
+                </div>
+              )}
             </>
           )}
         </div>
+
         <Field label="Notes (optional)"><input type="text" className="ss-in" value={notes} maxLength={120} placeholder="Squawks, oil added, destinations…" onChange={(e) => setNotes(e.target.value)} /></Field>
         {err && <p style={{ color: "#b3261e", fontSize: 13.5, margin: "2px 0 0" }}>{err}</p>}
         <p className="ss-mono" style={{ fontSize: 11, opacity: 0.5, marginTop: 10 }}>Hobbs time and fuel burned are calculated for you.</p>

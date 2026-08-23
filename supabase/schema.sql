@@ -46,8 +46,15 @@ create trigger bookings_touch before update on public.bookings
 create table public.flight_logs (
   id           uuid primary key default gen_random_uuid(),
   booking_id   uuid references public.bookings(id) on delete set null,
-  member_id    text not null,                 -- pilot in command who flew
+  member_id    text not null,                 -- pilot in command who filed the log
   flight_date  date not null default current_date,
+
+  -- who was aboard and what each put in:
+  --   [{"member_id":"parsa","fuel_added":40,"fuel_cost":304.80}, ...]
+  -- Fuel duty (25 gal per Hobbs hour) splits evenly across these entries;
+  -- fuel credit does not — each member is credited their own fuel_added.
+  -- Null means a solo flight by member_id.
+  participants jsonb,
 
   hobbs_start  numeric(7,1),                  -- meter readings (cumulative)
   hobbs_end    numeric(7,1),
@@ -56,8 +63,8 @@ create table public.flight_logs (
 
   fuel_start   numeric(5,1),                  -- gallons on board at start
   fuel_end     numeric(5,1),                  -- gallons on board at end
-  fuel_added   numeric(6,1),                  -- gallons purchased this flight
-  fuel_cost    numeric(8,2),                  -- $ spent on fuel
+  fuel_added   numeric(6,1),                  -- whole-flight total (sum of participants)
+  fuel_cost    numeric(8,2),                  -- whole-flight total (sum of participants)
 
   notes        text,
   created_at   timestamptz not null default now(),
@@ -69,10 +76,20 @@ create table public.flight_logs (
   fuel_burned numeric(7,1) generated always as ((fuel_start + coalesce(fuel_added,0)) - fuel_end) stored,
 
   constraint hobbs_ok check (hobbs_start is null or hobbs_end is null or hobbs_end >= hobbs_start),
+  -- CHECK cannot contain a subquery, so this guards the container only;
+  -- the per-entry shape is enforced by the app.
+  constraint participants_shape check (
+    participants is null
+    or (
+      jsonb_typeof(participants) = 'array'
+      and jsonb_array_length(participants) between 1 and 3
+    )
+  ),
   constraint tach_ok  check (tach_start  is null or tach_end  is null or tach_end  >= tach_start)
 );
 create index flight_logs_date_idx   on public.flight_logs (flight_date desc);
 create index flight_logs_member_idx on public.flight_logs (member_id);
+create index flight_logs_participants_idx on public.flight_logs using gin (participants);
 create trigger flight_logs_touch before update on public.flight_logs
   for each row execute function public.touch_updated_at();
 

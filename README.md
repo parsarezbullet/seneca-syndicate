@@ -8,7 +8,11 @@ Hobbs / fuel after flying. Data lives in Supabase with live sync.
 
 SQL Editor → New query → paste **`supabase/schema.sql`** → Run. It creates
 everything from scratch (it begins with DROP statements, so it also resets any
-old tables). No migration needed.
+old tables).
+
+**Already have a database from before shared flights?** Don't run `schema.sql`
+— it would drop your data. Run **`supabase/migration-shared-flights.sql`**
+instead; it only adds the `participants` column and is safe to run twice.
 
 ## Three tabs
 
@@ -25,8 +29,8 @@ A sticky button is always on screen: **Book the plane** on the calendar tabs,
 Each flight is one row in `flight_logs`, separate from the booking, because the
 flight record is what drives cost-sharing and maintenance:
 
-- You enter **Hobbs start/end, fuel start/end**, plus optional **fuel added**
-  (gal) and **fuel cost** ($), and notes.
+- You enter **Hobbs start/end, fuel start/end**, **who flew**, what each
+  person **added** (gal) and **paid** ($), and notes.
 - The database computes **Hobbs time and fuel burned** for you.
 - The log form **pre-fills the start readings** from the last flight's end
   readings, so the meters stay continuous and you type less.
@@ -48,6 +52,28 @@ The app treats this as a running obligation rather than a note on the wall:
 
 The rate lives in one place — `FUEL_PER_HOBBS_HOUR` at the top of
 `src/App.jsx`. Change that constant and every figure above follows.
+
+## Shared flights
+
+A flight can carry one, two, or all three partners. Tap the others under **Who
+flew** in the log form.
+
+- **Duty splits evenly.** A 3.0 hr flight owes 75 gal; two aboard is 37.5 each,
+  three is 25 each.
+- **Credit does not split.** Each member is credited only the gallons they
+  personally pumped, so an uneven fill lands on the right person. On that
+  three-way flight, if Parsa puts in 60 and Ali R. puts in 15, Parsa comes out
+  35 over, Ali R. 10 short, Ali B. 25 short — and the flight nets to zero.
+- Any participant can edit a shared flight, not just whoever filed it.
+- Each flight card breaks the split out per person.
+
+Who flew and who paid lives in `flight_logs.participants` (jsonb). The
+`fuel_added` / `fuel_cost` columns stay whole-flight totals — the app writes
+them as the sum of the participants, and the generated `fuel_burned` column
+still depends on `fuel_added`.
+
+Flights logged before this feature have `participants = null` and read back as
+a solo flight by `member_id`, so nothing needed backfilling.
 
 ## Tach
 
